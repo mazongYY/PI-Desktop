@@ -97,7 +97,7 @@ unit/integration 测试；代码 pull request 使用有选择且高价值的 E2E
 
 ## E2E PR 合入门
 
-每个代码 pull request 都必须在合入前通过与其回归面相关的 E2E。代码变更包括渲染器、Electron Main、Preload、Agent Runtime、Rust host-core、会话、转录、计划、插件、MCP、权限、供应商/模型运行时、持久化、进程生命周期、打包/启动，以及影响应用执行的构建或 CI 行为。仅文档更改在不影响可执行行为时可豁免。
+每个代码 pull request 都必须在打开或更新前，在已经包含最新 `origin/main` 的候选上通过与其回归面相关的 E2E（`pnpm check:pr-base`）。不得打开落后于 `origin/main` 的 PR。不要为了跑 E2E 把任务合进本地 `main`。代码变更包括渲染器、Electron Main、Preload、Agent Runtime、Rust host-core、会话、转录、计划、插件、MCP、权限、供应商/模型运行时、持久化、进程生命周期、打包/启动，以及影响应用执行的构建或 CI 行为。仅文档更改在不影响可执行行为时可豁免。
 
 根目录 `package.json` 是可执行命令的事实来源。最低选择如下：
 
@@ -616,8 +616,9 @@ unit/integration 测试；代码 pull request 使用有选择且高价值的 E2E
 - **预期**：在聊天路径上，对话顶部栏仅显示标题和操作；
   它没有模型或 Agent|Plan|Goal 模式控制。左侧输入 Composer 芯片拥有
   活动会话的 Agent/Plan/Goal 开关，Composer 右侧组合芯片拥有模型和推理选择。的
-  任务标题是唯一可见的标题文本，最多 10 个字符
-  带有省略号；项目范围可通过其工具提示获得。紧凑型
+  任务标题是唯一可见的标题文本，使用可用宽度，仅在溢出时显示省略号。
+  在宽窄布局、侧边栏展开/折叠及工作面板打开/关闭时，检查超过 10 个字符的
+  英文标题，确保标题不会覆盖操作按钮。完整标题和项目范围可通过工具提示获得。紧凑型
   运行时出现状态点。侧边栏
   切换仅在折叠状态下存在（没有
   侧边栏控件的重复）。在所有其他路线上均采用无框拖曳
@@ -2147,6 +2148,23 @@ MainChat 弥补了缺口。 Maximized/fullscreen 调用保留最新的
 - **里程碑**：M5
 - **状态**：草案（手动）
 
+#### E2E-BROWSER-session-preview-race：切换会话不显示过期预览
+
+- **前置条件**：两个会话具有不同 HTML 预览，浏览器面板上下文分别保留。夹具可以独立
+  延迟目录查询和文档加载。
+- **步骤**：预览 A，在后台生成 B 的预览；折叠 A 的面板后打开 B，延迟 B 的目录查询和
+  加载，然后切回 A。快速切换 B → C，最后才完成旧 B 的目录查询。再分别验证已经开始的
+  旧加载、空会话、加载失败和 guest 销毁。
+- **预期**：后台 B 不导航 A。切换后，B 的面板不显示 A 的文档，后续尺寸与可见性更新
+  也不能显示它。只有最新导航可以显示 guest，旧 B 查询迟到不能覆盖 C。切回 A 恢复 A，
+  空会话保持空白。迟到完成不能撤销关闭或销毁。同会话正常导航保留当前页面。
+  非法目标、失败或超时不能把上一个文档报告为目标会话已经就绪。切换导航超过既有
+  15 秒等待上限后保持隐藏，需重试，不承诺迟到完成自动显示。
+- **关联规范**：`04-ux/08-component-spec.md` §5.3；ADR 0028、ADR 0170。
+- **状态**：`browser-host-session.test.mjs` 与 `browser-pane-navigation.test.mjs`
+  覆盖生产 BrowserHost/BrowserPane 服务路径，控制原生浏览器与 Host 边界，采用确定性
+  时钟。尚不覆盖原生 Electron 合成显示或报告者的真实会话。
+
 #### E2E-060：文件选项卡浏览停留在工作区中
 
 - **先决条件**：具有嵌套源文件工件的工作区，大型
@@ -2196,7 +2214,7 @@ MainChat 弥补了缺口。 Maximized/fullscreen 调用保留最新的
 #### E2E-CHAT-transcript-context-menu：右键消息或记录
 
 - **前提条件**：会话中有一条完成的用户提示和一条完成的助手回答；对话面板已聚焦。
-- **步骤**：1）右键用户板。2）选择复制，再选择选中消息文本。3）在用户板里选中一段文字，再右键该板并选择复制；收起选区后再右键复制一次。4）右键助手回合并选择复制。5）右键最后一回合下方空白处，选择复制整个对话。6）在打开的菜单上按 Escape，再按 Tab。7）右键回答里的 markdown 链接。
+- **步骤**：1）右键用户板。2）选择复制，再选择选中消息文本。3）在用户板里选中一段文字，再右键该板并选择复制；收起选区后再右键复制一次。4）右键助手回合并选择复制。5）右键最后一回合下方空白处，选择复制整个对话。6）在打开的菜单上按 Escape，再按 Tab。7）右键回答里的 markdown 链接。8）编辑用户消息、替换内容、选中一段草稿并右键复制；再验证无选区复制、选中消息文本和取消编辑后的复制。
 - **预期**：用户菜单列出复制、选中消息文本、编辑，以及分隔后的删除；助手菜单列出复制、选中消息文本、重新生成和分叉。复制写入打开菜单时该行内的选中文本；光标折叠或选区在行外时退回整段。复制整个对话仍写入带说话人标签的整段对话。两者都显示 toast。选中文本会高亮气泡。Escape 和 Tab 关闭菜单且不执行项。链接仍提供在默认浏览器打开、在工作面板打开、复制链接地址。引用、批注、打开侧边聊天不出现（ADR 0268）。表面是视口固定的文档级层，不会改变记录高度。
 - **链接规格**：`04-ux/08-component-spec.md` §8.3 / §8.5，
   `04-ux/09-interaction-patterns.md`（浮动下拉表面），
@@ -2206,6 +2224,8 @@ MainChat 弥补了缺口。 Maximized/fullscreen 调用保留最新的
 - **状态**：单位覆盖（`chat-context-menu.test.mjs`、
   `chat-context-menu-items.test.mjs`、`chat-context-menu-surface.test.mjs`）；
   完整 UI 场景草稿
+
+- 编辑时复制应使用草稿选区，无选区时复制整份草稿；选中消息文本应选中草稿。菜单不提供编辑、删除或版本切换；取消后原消息及其菜单保持不变。自动化验证：`node scripts/e2e-message-edit-copy.mjs`。
 
 #### E2E-060b：镀铬中性灰色调
 
@@ -3640,34 +3660,35 @@ IPC 请求无法关闭。
 
 - **先决条件**：项目绑定的 Agent 会话使用确定性
   发出部分辅助流的提供商装置，终止一次，
-  然后下一个请求成功；第二场比赛可以终止五次；
+  然后下一个请求成功；第二场比赛可以终止 11 次；
   第三个装置在一次尝试中于标头之前返回
   `OpenAI API error (502)`，并在下一次尝试中于流中返回它；
-  第四个装置返回连续六个 502；第五个装置返回带
+  第四个装置返回连续 11 个 502；第五个装置返回带
   `Retry-After` 的 503。
 - **步骤**：
   1. 使用单端接夹具开始 Agent 转动，并观察
      部分助理回应。
   2. 等待有界重试并检查成绩单、会话状态和
      恢复后的终端诊断。
-  3. 对五端夹具重复并检查端子错误
+  3. 对 11 次终止夹具重复并检查端子错误
      message/event 及其诊断详细信息。
   4. 运行混合阶段 502 装置，并针对标头之前和流中的
      502 检查请求计数与终端诊断。
-  5. 运行持续六次 502 的装置并检查终端错误。
+  5. 运行持续 11 次 502 的装置并检查终端错误。
   6. 运行 503 `Retry-After` 装置并检查观察到的等待。
   7. 重新加载会话并验证是否只有已完成的响应或
      单终端故障助手依然耐用。
+  8. 打开设置中的「无尽重试」后，故障超过默认次数仍继续；停止回合时不再发起后续请求，关闭后恢复有界上限。
 - **预期**：
   - `terminated` 被分类为 `STREAM_FAILED`，上游网关
     `502`/`503`/`504` 被分类为可重试的 `PROVIDER_ERROR`。
   - 非 429 瞬时故障共享一个有界预算：在初始尝试之后最多
-    重试四次，总共五次提供程序尝试，由请求设置和流式传输
+    重试 10 次，总共 11 次提供程序尝试，由请求设置和流式传输
     交付共享。每次重试都等待一个可中止的有界退避，从模型
     上下文中删除失败的助手，并且不产生重复的助手气泡或
     终端错误通知。
   - 流中的 502 会被重试，而不是立即显现。混合阶段装置在两个
-    阶段之间花费同一个计数器，总共进行五次尝试，而不是每个
+    阶段之间花费同一个计数器，总共进行 11 次尝试，而不是每个
     阶段各重试一次。在没有 `Retry-After` 标头时，观察到的等待
     依次为 1 秒、2 秒、4 秒，然后是 8 秒，并且在两个阶段中完全
     相同。
@@ -3676,18 +3697,19 @@ IPC 请求无法关闭。
   - 恢复的回合发出一个终端生命周期并保持相同的可见
     助理消息 ID。时序日志为每次重试记录 `outcome=retry`
     及其尝试编号，以及最终结果。
-  - 第五次终止发出一个终端 `STREAM_FAILED` 辅助错误和
+  - 第 11 次终止发出一个终端 `STREAM_FAILED` 辅助错误和
     生命周期事件；持续 502 的装置发出一个终端
-    `PROVIDER_ERROR`。两者都携带 `retryAttempt: 4`。可用的详细
+    `PROVIDER_ERROR`。两者都携带 `retryAttempt: 10`。可用的详细
     信息包括阶段、流计时和提供商状态，无需凭据或不受限制的
     提供商正文。
   - 503 装置等待服务器的 `Retry-After`，而不是客户端退避。非 429
     的服务器等待和回退等待都以 8 秒为上限。
-  - 流中的 HTTP 429 由 429 预算单独的五次重试路径覆盖；两个
+  - 流中的 HTTP 429 由 429 预算单独的 10 次重试路径覆盖；两个
     预算互不占用。
   - 身份验证、模型选择、上下文和格式错误的请求失败
     不进入任何提供程序重播路径，包括来自格式错误的 400/422
-    请求的不可重试 `PROVIDER_ERROR`。
+    请求的不可重试 `PROVIDER_ERROR`。无尽模式不改变分类，只去掉已准入网络/瞬时故障的次数上限；
+    仍可中止，并以无界重试指示标出。
 - **链接规格**：`03-runtime/01-ipc-protocol.md`，
   `03-runtime/02-agent-runtime.md`、`03-runtime/08-error-codes.md`、
   `08-meta/decisions-log.md`（D186、D259）、ADR 0050、ADR 0128
@@ -3695,6 +3717,20 @@ IPC 请求无法关闭。
 - **里程碑**：M5
 - **状态**：单位覆盖（`agent-errors.test.ts`、`provider-retry.test.ts`、
   `runtime.test.ts`、`subagent.test.ts`）；完整 provider/UI 旅程草案
+
+**Synchronized update (#699, E2E-096 / E2E-149):** Alternate one network
+failure with each of eleven successful Read responses, then fail once before
+the final answer. All twelve independent failures must recover, starting at
+retry 1 each time, with no duplicate tool execution. Complete successful
+responses replenish both budgets; headers, partial output, and phase changes
+do not. A new persistent outage after recovery still gets ten retries and
+reports `retryAttempt: 10`. Restore the provider and verify Continue succeeds.
+The same reset rule applies to rate limits and builtin subagents.
+
+The socket-failure, interrupted-stream, Responses, exhaustion, Continue, and
+eleven-tool-round desktop paths are verified by
+`scripts/e2e-provider-recovery.mjs`; real agent-loop coverage is in
+`provider-recovery-flow.test.ts`. Other scenario variants remain Draft.
 
 ## 7A。 M6 Plan 和 shell 场景
 
@@ -5249,6 +5285,8 @@ IPC 请求无法关闭。
 | C — 对话和直播（委托上下文预算） | E2E-SUBAGENT-context-overflow-compacts-before-failing、E2E-SUBAGENT-context-overflow-reports-actionable-failure、E2E-SUBAGENT-resume-seeds-within-context-budget |
 | 品质（委托上下文预算） | E2E-SUBAGENT-context-overflow-compacts-before-failing、E2E-SUBAGENT-context-overflow-reports-actionable-failure、E2E-SUBAGENT-resume-seeds-within-context-budget |
 | M6+（委托上下文预算） | E2E-SUBAGENT-context-overflow-compacts-before-failing、E2E-SUBAGENT-context-overflow-reports-actionable-failure、E2E-SUBAGENT-resume-seeds-within-context-budget |
+| G — 插件宿主生命周期（崩溃上报） | E2E-PLUGIN-crash-report-names-the-exit-code |
+| 品质（崩溃上报） | E2E-PLUGIN-crash-report-names-the-exit-code |
 
 `US-UI-*` 视觉场景（§UI shell 视觉场景）追踪到
 [决策日志 §D](/zh-CN/spec/08-meta/decisions-log) 中的法典平价决策
@@ -8103,6 +8141,12 @@ runner 会在运行时的隔离临时目录中生成六个插件形态 fixture�
 - **里程碑**：M6+
 - **状态**：草稿
 
+- **Local fallback regression**: Set the process default data directory to a
+  different temporary root, then create a plugin manager with its own root.
+  All bundled fallback package URLs must stay beneath the manager's root;
+  installing the bundled package must still report byte progress, validate its
+  size and checksum, and preserve cancellation behavior.
+
 #### E2E-PLUGIN-cancel-during-download-installs-nothing：在下载期间取消会停止安装、不留下任何已安装内容，并让对话框静默关闭
 
 - **先决条件**：一次官方渠道安装，其安装包足够大或镜像足够慢，使下载阶段持续一段时间；能够应答 `market.cancelInstall`；同时可以查看插件目录、安装缓存与已安装列表。
@@ -8289,3 +8333,35 @@ the latest destination. These assertions measure work counts, not device FPS.
   定位不在本次范围内，保持原有搜索行为。
 - **规格：** 04-ux/06-settings-ia、04-ux/08-component-spec、
   04-ux/09-interaction-patterns；ADR turn-process-and-thinking-display。
+
+### E2E-MCP-HTTP-ACK — HTTP acknowledgement and authorization status
+
+- **Preconditions**: A local mock Streamable HTTP server returns JSON for
+  initialize, `202` with plain-text `Accepted` for notifications/initialized,
+  SSE for tools/list, and JSON for tools/call. No provider credentials needed.
+- **Steps**: Connect, discover a tool, and call it. Render the MCP settings row
+  with idle, connecting, ready, non-authentication failure, and authentication
+  failure statuses, including an expired stored OAuth credential.
+- **Expected**: The acknowledgement does not enter the JSON parser; discovery,
+  calls, and session headers remain functional. Only explicit authRequired
+  status shows the authorization-required badge. Non-authentication failures
+  retain their original error. Authentication failures remain actionable.
+- **Specs**: 07-plugins/01-plugin-system §12.2; ADR 0038; ADR 0283.
+- **Acceptance**: HTTP client integration and settings component rendering.
+- **Milestone**: Maintenance.
+- **Status**: Covered by the existing HTTP client integration fixture and a
+  focused component-render validation; no live IDA process required.
+
+### E2E-PLUGIN-crash-report-names-the-exit-code
+
+- **先决条件：** 已加载的插件宿主进程自行死亡——夹具为写一行 stderr 后 `process.exit(7)`——并带一个常驻服务，使监督器路径也被覆盖。
+  隔离的桌面配置；不访问市场或网络。
+- **步骤：** 加载插件并让宿主进程死亡。读取加载错误、`failed` 服务状态、`plugin.crash` 审计记录与 `plugin` 日志通道。若有条件，
+  再用一次硬故障（Windows `0xC0000005` 一类退出）重复；最后在插件宿主存活时退出应用。
+- **预期：** 上述每一处都给出退出码（`exit code 7`；硬故障为 `exit code 3221225477 (0xC0000005)`），而夹具的 stderr 行不会出现在
+  加载错误或崩溃审计记录中。干净退出完全不上报崩溃：退出是关闭而不是崩溃。
+- **规格：** 07-plugins/05-plugin-lifecycle §3.1 / §8、08-meta/decisions-log D607。
+- **验收：** G（插件宿主生命周期）、品质（可诊断性）。**里程碑：** Post-MVP 回归覆盖。
+- **自动化：** `apps/desktop/test/plugin-services.test.mjs` 真实 fork 宿主进程、以夹具退出码杀死它，并断言服务状态与审计记录上的
+  退出码及原始 stderr 缺失；`plugin-isolation.test.mjs` 与关闭用例覆盖"退出不是崩溃"那一半。
+- **状态：** 运行时层已自动化；无 UI 驱动读取插件页的错误文本。

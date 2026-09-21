@@ -176,6 +176,7 @@ import {
 import { genericModelConfig, visionFromModelConfig } from "./model-capabilities.js";
 import type { ProjectInstructions } from "./project-instructions.js";
 import { projectInstructionsPrompt } from "./project-instructions-prompt.js";
+import type { CustomSystemPrompt } from "./custom-system-prompt.js";
 import { projectMemoryPrompt } from "./project-memory-prompt.js";
 import {
   pluginSkillsPrompt,
@@ -822,7 +823,11 @@ export type AgentRuntimeOptions = {
   turnId?: string;
   provider: RuntimeProviderConfig;
   thinkingLevel: SessionThinkingLevel;
+  /** Persisted opt-in for retrying transient provider failures until success. */
+  infiniteProviderRetry?: boolean;
   systemPrompt?: string;
+  /** pi-compatible SYSTEM.md / APPEND_SYSTEM.md resolved for the session (issue #542). */
+  customSystemPrompt?: CustomSystemPrompt;
   /** Session-bound workspace root used for path-scoped instruction requests. */
   projectPath?: string;
   /** Instructions resolved from the session's workspace. */
@@ -877,6 +882,7 @@ export type RuntimeMatchConfig = {
   pluginTools?: PluginToolDef[];
   pluginSkills?: PluginSkillDef[];
   trustedExtensions?: TrustedExtensionSpec[];
+  customSystemPrompt?: CustomSystemPrompt;
   projectInstructions?: ProjectInstructions;
   projectMemory?: string;
   projectPath?: string;
@@ -1465,6 +1471,7 @@ export class DesktopAgentRuntime {
   private onEvent: (envelope: AgentEventEnvelope) => void;
   private streamSink: StreamCoalescer;
   private baseSystemPrompt: string;
+  private customSystemPrompt?: CustomSystemPrompt;
   private planningState: PlanningState;
   private pendingPlanId?: string;
   private currentAssistant?: UiMessage;
@@ -1569,13 +1576,12 @@ export class DesktopAgentRuntime {
   private readonly providerTransportHealth: ProviderTransportHealth =
     createProviderTransportHealth();
   private pendingProviderRetry?: ReturnType<typeof classifyAgentError>;
-  /**
-   * Shared bounded retry count for non-rate-limit transient failures, counted
-   * across the request-setup and stream phases (D259).
-   */
+  /** Non-429 setup + stream failures since the last successful response. */
   private providerTransientRetryAttempt = 0;
   /** Shared OpenCode-style 429 retry count across setup and stream phases. */
   private providerRateLimitRetryAttempt = 0;
+  /** Opt-in mode removes only the retry-count ceiling; abort and backoff stay intact. */
+  private infiniteProviderRetry = false;
   private activeProviderRetryAttempt = 0;
   private providerRetryInProgress = false;
   private suppressProviderRetryRunEnd = false;
@@ -1663,6 +1669,7 @@ export class DesktopAgentRuntime {
     this.planningState = proposalKindForMode(this.mode) ? "planning" : "inactive";
     this.provider = opts.provider;
     this.thinkingLevel = clampThinkingLevel(opts.provider, opts.thinkingLevel);
+    this.infiniteProviderRetry = opts.infiniteProviderRetry === true;
     this.host = opts.host;
     this.hostCloseUnsubscribe = this.host.onClose?.(() => {
       this.cleanupActiveToolProgress();
@@ -1684,6 +1691,7 @@ export class DesktopAgentRuntime {
     this.commandShell = opts.commandShell;
     this.scratchDir = opts.scratchDir;
     this.projectPath = opts.projectPath?.trim() || undefined;
+    this.customSystemPrompt = opts.customSystemPrompt;
     this.baseProjectInstructions = opts.projectInstructions;
     this.projectInstructions = opts.projectInstructions;
     this.projectMemory = opts.projectMemory?.trim() || undefined;
@@ -1705,7 +1713,9 @@ export class DesktopAgentRuntime {
       rebuildChainsFromTranscript(this.transcriptHistory),
     );
     const skillsPrompt = pluginSkillsPrompt(this.pluginSkills);
-    const defaultSystemPrompt = [
+    // Parts: [0] is the product persona; [1:] are operational rules a custom
+    // SYSTEM.md must not remove (tool guidance, delegation, scratch, skills).
+    const defaultSystemPromptParts = [
       DEFAULT_RUNTIME_SYSTEM_PROMPT,
       // Collaboration rules. Measured sessions ran hours with 380 assistant
       // messages and exactly one non-empty text body: a reasoning model reads
@@ -1765,8 +1775,18 @@ Delegation rules:
       // path-scoped instruction reload never drops it, and it stays ahead of
       // the instruction chain so the user's own AGENTS.md keeps the last word.
       ...(skillsPrompt ? [skillsPrompt] : []),
+    ];
+    // A custom SYSTEM.md replaces only the product persona line, never the
+    // operational rules in the default parts: tool guidance, delegation
+    // steering and scratch mechanics keep the desktop working (issue #542).
+    this.baseSystemPrompt = [
+      (
+        opts.customSystemPrompt?.replace ??
+        opts.systemPrompt ??
+        DEFAULT_RUNTIME_SYSTEM_PROMPT
+      ).trim(),
+      ...defaultSystemPromptParts.slice(1),
     ].join("\n\n");
-    this.baseSystemPrompt = opts.systemPrompt ?? defaultSystemPrompt;
     this.agent = new Agent({
       streamFn: (m, context, options) => {
         this.setAgentActivity({ phase: "waiting-model", since: Date.now() });
@@ -1859,6 +1879,7 @@ Delegation rules:
                 phase: "retrying",
                 since: Date.now(),
                 attempt,
+                ...(this.infiniteProviderRetry ? { infinite: true } : {}),
                 retryDelayMs: delayMs,
                 error: this.retryActivityError(error),
               });
@@ -1934,6 +1955,12 @@ Delegation rules:
     );
   }
 
+  /** Update the opt-in retry policy without rebuilding an idle runtime. */
+  setInfiniteProviderRetry(enabled: boolean): void {
+    if (this.disposed) throw new Error("runtime disposed");
+    this.infiniteProviderRetry = enabled;
+  }
+
   /** Switch the planning state on this Agent without creating another Agent. */
   setMode(mode: Mode): void {
     if (this.disposed) throw new Error("runtime disposed");
@@ -2007,6 +2034,7 @@ Delegation rules:
       this.mode,
       [
         this.baseSystemPrompt,
+        ...(this.customSystemPrompt?.append ? [this.customSystemPrompt.append] : []),
         ...(optionalToolsPrompt ? [optionalToolsPrompt] : []),
         ...(projectPrompt ? [projectPrompt] : []),
         ...(memoryPrompt ? [memoryPrompt] : []),
@@ -2259,6 +2287,10 @@ Delegation rules:
       safeJson(this.commandShell) === safeJson(config.commandShell) &&
       safeJson(this.baseProjectInstructions ?? null) ===
         safeJson(config.projectInstructions ?? null) &&
+      // Editing SYSTEM.md / APPEND_SYSTEM.md retires the runtime so the next
+      // prompt recomposes from the fresh content.
+      safeJson(this.customSystemPrompt ?? null) ===
+        safeJson(config.customSystemPrompt ?? null) &&
       (this.projectMemory ?? "") === (config.projectMemory?.trim() ?? "") &&
       (this.projectPath ?? "") === (config.projectPath?.trim() ?? "") &&
       // Enabling a plugin, revoking agent.prompt.inject or renaming a skill
@@ -4176,6 +4208,7 @@ Delegation rules:
           parentToolCallId: toolCallId,
           task,
           provider,
+          infiniteProviderRetry: this.infiniteProviderRetry,
           thinkingLevel,
           fallbackModels: (definition.fallbackModels ?? []).map((pin) => ({
             key: subagentModelKey(pin),
@@ -5313,8 +5346,10 @@ Delegation rules:
     phase: "request" | "stream",
   ): number | undefined {
     if (!error.retriable) return undefined;
+    const infinite = this.infiniteProviderRetry;
     if (error.code === "PROVIDER_RATE_LIMITED") {
       if (
+        !infinite &&
         this.providerRateLimitRetryAttempt >=
         PROVIDER_RATE_LIMIT_MAX_RETRIES
       ) {
@@ -5330,7 +5365,10 @@ Delegation rules:
     // next must not multiply the budget or reset it by changing phase.
     void phase;
     if (!isTransientProviderRetryCode(error.code)) return undefined;
-    if (this.providerTransientRetryAttempt >= PROVIDER_TRANSIENT_MAX_RETRIES) {
+    if (
+      !infinite &&
+      this.providerTransientRetryAttempt >= PROVIDER_TRANSIENT_MAX_RETRIES
+    ) {
       return undefined;
     }
     const attempt = ++this.providerTransientRetryAttempt;
@@ -5346,6 +5384,9 @@ Delegation rules:
   ): ReturnType<typeof classifyAgentError> {
     const explained = withProviderFetchFailure(error, this.providerFetchFailure);
     const existingDetails = explained.details ?? {};
+    const retryAttempt = error.code === "PROVIDER_RATE_LIMITED"
+      ? this.providerRateLimitRetryAttempt
+      : isTransientProviderRetryCode(error.code) ? this.providerTransientRetryAttempt : 0;
     // A capture exists only for an attempt that rejected before any response, so
     // it is also the honest phase: whatever the message lifecycle that surfaced
     // the failure looks like, this request never reached the provider, and
@@ -5384,9 +5425,7 @@ Delegation rules:
         existingDetails.providerStatus === undefined
           ? { providerStatus: this.providerResponseStatus }
           : {}),
-        ...(this.activeProviderRetryAttempt > 0
-          ? { retryAttempt: this.activeProviderRetryAttempt }
-          : {}),
+        ...(retryAttempt > 0 ? { retryAttempt } : {}),
       },
     };
   }
@@ -5472,7 +5511,10 @@ Delegation rules:
     if (messages.at(-1)?.role !== "assistant") {
       throw new Error("Cannot retry a provider stream without its failed assistant message");
     }
-    messages.pop();
+    // A failed stream can be represented by more than one trailing assistant
+    // message after a tool round. Remove the whole failed suffix before
+    // continuing; pi-agent-core rejects any assistant-terminated transcript.
+    while (messages.at(-1)?.role === "assistant") messages.pop();
     this.setAgentMessages(messages);
 
     this.providerRetryInProgress = true;
@@ -5497,6 +5539,7 @@ Delegation rules:
         phase: "retrying",
         since: Date.now(),
         attempt: retryAttempt,
+        ...(this.infiniteProviderRetry ? { infinite: true } : {}),
         retryDelayMs: delayMs,
         error: this.retryActivityError(retryError),
       });
@@ -6871,10 +6914,13 @@ Delegation rules:
               streamMs,
             );
           }
-          // A turn with no tool call and no visible text ends the run while
-          // leaving the user with nothing: the reasoning that may hold the
-          // answer is never rendered. Re-run once with a nudge before letting
-          // that surface as a finished turn.
+          // Only a completed response replenishes both budgets. Headers and
+          // partial output must not let a repeatedly broken stream retry forever.
+          if (!failed && !aborted) {
+            this.providerTransientRetryAttempt = 0;
+            this.providerRateLimitRetryAttempt = 0;
+          }
+          // Re-run an invisible answer once before surfacing a finished turn.
           const silence =
             !failed &&
             !aborted &&

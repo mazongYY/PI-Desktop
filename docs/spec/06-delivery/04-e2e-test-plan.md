@@ -151,17 +151,19 @@ Each scenario is documented in this format:
 ## E2E Main Integration Validation
 
 Every code-bearing change must pass the E2E suites relevant to its regression
-surface on the integrated local `main` that carries the change, before the
-request branch is pushed and the pull request is opened. Code-bearing changes
-include Renderer, Electron Main, Preload, Agent Runtime, Rust host-core,
-sessions, transcripts, plans, plugins, MCP, permissions, provider/model
-runtime, persistence, process lifecycle, packaging/runtime startup, and build
-or CI behavior that affects application execution. Documentation-only changes
-are exempt when they do not alter executable behavior.
+surface on a candidate that already contains the latest `origin/main`, before
+the request branch is pushed and the pull request is opened. Code-bearing
+changes include Renderer, Electron Main, Preload, Agent Runtime, Rust
+host-core, sessions, transcripts, plans, plugins, MCP, permissions,
+provider/model runtime, persistence, process lifecycle, packaging/runtime
+startup, and build or CI behavior that affects application execution.
+Documentation-only changes are exempt when they do not alter executable
+behavior.
 
-Run the selected suites from the latest integrated local `main` checkout and
-commit. An E2E run on the request branch is exploratory and does not satisfy
-this gate.
+Run the selected suites from the request worktree after `pnpm check:pr-base`
+passes. An E2E run on a branch that is behind `origin/main` is exploratory and
+does not satisfy this gate. Do not merge the task into local `main` to create
+the candidate.
 
 Use the root `package.json` as the source of truth for executable commands.
 The minimum selection is:
@@ -1235,7 +1237,10 @@ identify the platform validation still needed.
   and inspect the composer. 3) Type a different prompt in B, then switch back
   to A. 4) Create a new session and inspect its composer. 5) Return to B and
   then delete B; revisit the remaining sessions and the home composer if it is
-  available. 6) Type in A, open Settings (or Plugins), then return to chat.
+  available. 6) Type in A, add a workspace file through `@` and a pasted scratch
+  file, open Settings (or Plugins), then return to chat. Confirm both file chips
+  and the surrounding text remain. Change the workspace of the same draft and
+  confirm only its workspace-relative reference is removed.
   7) Hide the app window and show it again with an unsent draft in A.
 - **Expected**: B initially shows an empty composer, A restores its original
   unsent prompt, and the new session starts empty rather than inheriting A or
@@ -1250,7 +1255,9 @@ identify the platform validation still needed.
 - **Acceptance**: C (session isolation and composer input)
 - **Milestone**: M2
 - **Status**: Source-level regression covered
-  (`composer-draft-cache.test.mjs`); full UI scenario Draft
+  (`composer-draft-cache.test.mjs`); real React remount and workspace-change
+  coverage in `scripts/e2e/composer-paste.tsx` (`pnpm test:e2e:composer-paste`);
+  full UI scenario Draft
 
 #### E2E-011d: New task creates an immediate durable empty slot
 
@@ -1463,6 +1470,16 @@ identify the platform validation still needed.
   `session-switch-performance.test.mjs`); full UI scenario Draft
 
 
+#### Composer file-reference undo regression
+
+- Add a file reference to an unsent draft, select the chip, delete it, then
+  undo and redo with the native editor shortcuts. Undo must restore both the
+  chip and the file path used by submission; redo must remove both.
+- Switch to another chat and back after undo: the other draft stays empty and
+  the source retains the restored reference. Typing a removed chip's private-use
+  token as plain text must not restore the attachment.
+- Automated by `pnpm test:e2e:composer-paste` (`fileReferenceUndoRedo`).
+
 ### Conversation Top Bar
 
 #### E2E-087: Conversation top bar renders on the chat route
@@ -1481,8 +1498,11 @@ identify the platform validation still needed.
   or Agent|Plan|Goal mode control. The
   left-of-input Composer chip owns the active session's Agent/Plan/Goal switch,
   and the Composer-right combined chip owns model and reasoning selection. The
-  task title is the only visible title text and is capped at 10 characters
-  with an ellipsis; project scope is available through its tooltip. The sidebar
+  task title is the only visible title text and uses the available width,
+  with an ellipsis only on overflow. Check an English title longer than 10
+  characters in wide and narrow layouts, with the sidebar expanded/collapsed
+  and the work panel open/closed; titles must not overlap the action buttons.
+  The complete title and project scope remain available through its tooltip. The sidebar
   toggle is present only in the collapsed state (no
   duplicate of the sidebar's control). On every other route the frameless drag
   band renders instead (no chat top-bar controls) while retaining the same
@@ -3441,6 +3461,30 @@ identify the platform validation still needed.
 - **Milestone**: M5
 - **Status**: Draft (manual)
 
+#### E2E-BROWSER-session-preview-race: Session switching does not expose a stale preview
+
+- **Preconditions**: Two sessions have distinct HTML previews; their Browser
+  panel contexts are retained independently. Directory lookups and document
+  loads can be delayed independently by the fixture.
+- **Steps**: Preview A; produce B's preview in the background; collapse A's
+  panel and open B; delay B's directory lookup and load, then return to A.
+  Switch rapidly B → C and finish the older B lookup last. Repeat with an
+  already-started old load, an empty session, a failed load, and disposal.
+- **Expected**: Background B does not navigate A. On switching, no A document
+  appears in B's panel, even after bounds/visibility updates. Only the latest
+  navigation can reveal the guest; the late B lookup cannot replace C.
+  Returning to A restores A, while an empty session remains empty. Closing or
+  disposing cannot be undone by a delayed completion. Same-session navigation
+  keeps its current page visible. Invalid, failed, or timed-out loads do not
+  report the previous document as the destination being ready. A switch that
+  exceeds the existing 15-second load wait stays hidden until retried; automatic
+  late reveal is not promised.
+- **Specs linked**: `04-ux/08-component-spec.md` §5.3; ADR 0028, ADR 0170.
+- **Status**: Automated service-path coverage in `browser-host-session.test.mjs`
+  and `browser-pane-navigation.test.mjs`: production BrowserHost/BrowserPane,
+  controlled native-browser/Host boundaries, and deterministic timers. Native
+  Electron compositing and the reporter's live sessions are not covered.
+
 #### E2E-060: Files tab browsing stays inside the workspace
 
 - **Preconditions**: Workspace with file artifacts for nested source, large
@@ -3498,7 +3542,9 @@ identify the platform validation still needed.
   choose Copy. 4) Right-click the assistant turn and choose Copy.
   5) Right-click empty space below the last turn and choose Copy
   conversation. 6) Press Escape on an open menu, then Tab. 7) Right-click
-  a markdown link in the answer.
+  a markdown link in the answer. 8) Edit the user message, replace its content,
+  select a phrase, and right-click Copy. Repeat with a collapsed caret and
+  Select message text, then cancel editing and copy the saved message.
 - **Expected**: The user menu lists Copy, Select message text, Edit, and
   a separated Delete; the assistant menu lists Copy, Select message text,
   Regenerate, and Branch. Copy writes the live selection in the
@@ -3510,7 +3556,11 @@ identify the platform validation still needed.
   A link still offers Open in default browser, Open in work panel, and
   Copy link address. Quote, Annotate, and Open side chat are absent
   (ADR 0268). The surface is a viewport-fixed body-level layer and does
-  not resize the transcript.
+  not resize the transcript. During editing, Copy uses the selected draft text
+  or the full draft with a collapsed caret; Select message text selects the
+  draft. Edit, Delete, and revision actions are absent until editing ends.
+  Cancel preserves the original message. Automated Chromium component check:
+  `node scripts/e2e-message-edit-copy.mjs`.
 - **Specs linked**: `04-ux/08-component-spec.md` §8.3 / §8.5,
   `04-ux/09-interaction-patterns.md` (floating dropdown surfaces),
   ADR 0268
@@ -5449,6 +5499,17 @@ identify the platform validation still needed.
      no repair request starts.
   9. Reload the session and verify that only the completed response or the
      single terminal failed assistant remains durable.
+  10. Open Settings → AI → Defaults, enable infinite provider retry, and repeat
+      a network fixture that fails beyond ten attempts before recovering. Stop the
+      turn during backoff and verify no later request starts; disable the setting
+      and verify a fresh persistent outage stops after ten retries.
+  11. Alternate one socket failure and one successful tool-call response for
+      eleven actual Read calls, then fail once and return a final answer.
+      Verify all twelve independent failures recover in the same user turn,
+      each beginning at retry 1, with no repeated tool execution.
+  12. After a recovered tool response, keep the next response failing. Verify
+      it receives ten fresh retries and terminates once with `retryAttempt: 10`.
+      Restore the fixture, click Continue, and verify completion in the UI.
 - **Expected**:
   - `terminated` is classified as `STREAM_FAILED`, and an upstream gateway
     `502`/`503`/`504` as retryable `PROVIDER_ERROR`.
@@ -5459,7 +5520,9 @@ identify the platform validation still needed.
     duplicate assistant bubble or terminal error notification.
   - A mid-stream 502 is retried rather than surfacing immediately. The
     mixed-phase fixture spends one counter across both phases and makes eleven
-    attempts in total, not one retry per phase. Observed waits without a
+    attempts in total, not one retry per phase. A complete successful response
+    replenishes both retry budgets for the next tool round. Headers and partial
+    output do not. Observed waits without a
     `Retry-After` header are 1, 2, 4, then 8 seconds for every later retry,
     identical in both phases.
   - Only the failed request is replayed: the session, its transcript, and any
@@ -5487,14 +5550,21 @@ identify the platform validation still needed.
   - Authentication, model-selection, context, and descriptive
     malformed-request failures do not enter either provider replay path. The
     opaque empty-body 400/422 case is the bounded repair exception described
-    above.
+    above. Infinite mode changes no classification and only removes the retry
+    ceiling for admitted network/transient failures; it remains abortable and
+    is visibly marked with an unbounded retry indicator.
 - **Specs linked**: `03-runtime/01-ipc-protocol.md`,
   `03-runtime/02-agent-runtime.md`, `03-runtime/08-error-codes.md`,
   `08-meta/decisions-log.md` (D186, D259, D378), ADR 0050, ADR 0128, ADR 0206
 - **Acceptance**: C (chat & stream), F (persistence), H (diagnostics), Quality
 - **Milestone**: M5
-- **Status**: Unit-covered (`agent-errors.test.ts`, `provider-retry.test.ts`,
-  `runtime.test.ts`, `subagent.test.ts`); full provider/UI journey Draft
+- **Status**: Retry and successful-response budget boundaries covered by
+  `provider-recovery-flow.test.ts` through real agent loops. Desktop socket
+  failure, partial-stream recovery, Responses recovery, exhaustion, Continue,
+  and eleven-tool-round recovery run in `scripts/e2e-provider-recovery.mjs`.
+  Existing classification coverage: `agent-errors.test.ts`,
+  `provider-retry.test.ts`, `runtime.test.ts`, `subagent.test.ts`.
+  Other scenario variants remain Draft.
 
 #### E2E-149: Recover provider rate limits (429) silently in place
 
@@ -5526,6 +5596,10 @@ identify the platform validation still needed.
     attempts, never multiplies attempts through nested pi-ai retries, and
     emits no intermediate assistant error, lifecycle `error`, `turn_end`, or
     `agent_end`.
+    A complete successful response, including a tool-call response, resets both
+    budgets before the next model request. Independent recovered rate limits
+    across more than ten tool rounds must not terminate the user turn or a
+    builtin subagent; partial output alone must not replenish either budget.
   - A recovered attempt removes the failed assistant from model context and
     reuses its visible assistant message id. The transcript has one assistant
     bubble and one terminal lifecycle; bounded retry diagnostics retain the
@@ -7917,6 +7991,8 @@ identify the platform validation still needed.
 | C — Conversation & stream (delegate context budget) | E2E-SUBAGENT-context-overflow-compacts-before-failing, E2E-SUBAGENT-context-overflow-reports-actionable-failure, E2E-SUBAGENT-resume-seeds-within-context-budget |
 | Quality (delegate context budget) | E2E-SUBAGENT-context-overflow-compacts-before-failing, E2E-SUBAGENT-context-overflow-reports-actionable-failure, E2E-SUBAGENT-resume-seeds-within-context-budget |
 | M6+ (delegate context budget) | E2E-SUBAGENT-context-overflow-compacts-before-failing, E2E-SUBAGENT-context-overflow-reports-actionable-failure, E2E-SUBAGENT-resume-seeds-within-context-budget |
+| G — Plugin host lifecycle (crash report) | E2E-PLUGIN-crash-report-names-the-exit-code |
+| Quality (crash report) | E2E-PLUGIN-crash-report-names-the-exit-code |
 
 The `US-UI-*` visual scenarios (§UI shell visual scenarios) trace to the
 Codex parity decisions in [decisions-log §D](../08-meta/decisions-log.md)
@@ -13825,6 +13901,12 @@ plugin-form fixtures in an isolated temporary directory at runtime.
 - **Milestone**: M6+
 - **Status**: Draft
 
+- **Local fallback regression**: Set the process default data directory to a
+  different temporary root, then create a plugin manager with its own root.
+  All bundled fallback package URLs must stay beneath the manager's root;
+  installing the bundled package must still report byte progress, validate its
+  size and checksum, and preserve cancellation behavior.
+
 #### E2E-PLUGIN-cancel-during-download-installs-nothing: Cancelling during the download stops the install, leaves nothing installed, and closes the dialog without an error
 
 - **Preconditions**: An official-channel install of a package large enough or a mirror slow enough that the download phase lasts, a way to answer `market.cancelInstall`, and a view of the plugin directory, the install cache, and the Installed list.
@@ -13974,6 +14056,31 @@ the latest destination. These assertions measure work counts, not device FPS.
   default.
 - **Status:** Contract-covered; no end-to-end driver waits out a real 70s call.
 
+### E2E-PLUGIN-crash-report-names-the-exit-code
+
+- **Preconditions:** A loaded plugin whose host process dies on its own —
+  `process.exit(7)` after writing one line to stderr is the fixture — with a
+  resident service so the supervisor path is exercised too. Isolated desktop
+  profile; no marketplace or network access.
+- **Steps:** Load the plugin and let the host process die. Read the load error,
+  the `failed` service state, the `plugin.crash` audit record and the `plugin`
+  log channel. Repeat with a hard fault (a Windows `0xC0000005`-class exit) if
+  one is available, and then quit the app while a plugin host is alive.
+- **Expected:** Every one of those surfaces names the exit code (`exit code 7`,
+  and `exit code 3221225477 (0xC0000005)` for the fault), while the fixture's
+  stderr line is absent from the load error and crash audit record. A clean quit
+  reports no crash at all: quitting is a shutdown, not a crash.
+- **Specs:** `07-plugins/05-plugin-lifecycle.md` §3.1 / §8,
+  `08-meta/decisions-log.md` D607.
+- **Acceptance:** G (plugin host lifecycle), Quality (diagnosability).
+- **Milestone:** Post-MVP regression coverage.
+- **Automation:** `apps/desktop/test/plugin-services.test.mjs` forks a real host
+  process, kills it with a fixture exit code and asserts the code plus the
+  absence of raw stderr in the crash audit record; `plugin-isolation.test.mjs`
+  and the shutdown cases cover the "quit is not a crash" half.
+- **Status:** Automated at the runtime level; no UI driver reads the plugin
+  page's error text.
+
 ### E2E-DIALOG-long-text-boundaries
 
 - **Preconditions:** Built renderer assets and an isolated Electron component
@@ -14038,3 +14145,21 @@ the latest destination. These assertions measure work counts, not device FPS.
 - **Limits:** OS-root inclusion is checked without installing a root. The TLS
   success fixture uses a child-only extra CA; it does not reproduce a specific
   antivirus installation or claim native macOS/Linux verification.
+
+### E2E-MCP-HTTP-ACK — HTTP acknowledgement and authorization status
+
+- **Preconditions**: A local mock Streamable HTTP server returns JSON for
+  initialize, `202` with plain-text `Accepted` for notifications/initialized,
+  SSE for tools/list, and JSON for tools/call. No provider credentials needed.
+- **Steps**: Connect, discover a tool, and call it. Render the MCP settings row
+  with idle, connecting, ready, non-authentication failure, and authentication
+  failure statuses, including an expired stored OAuth credential.
+- **Expected**: The acknowledgement does not enter the JSON parser; discovery,
+  calls, and session headers remain functional. Only explicit authRequired
+  status shows the authorization-required badge. Non-authentication failures
+  retain their original error. Authentication failures remain actionable.
+- **Specs**: 07-plugins/01-plugin-system §12.2; ADR 0038; ADR 0283.
+- **Acceptance**: HTTP client integration and settings component rendering.
+- **Milestone**: Maintenance.
+- **Status**: Covered by the existing HTTP client integration fixture and a
+  focused component-render validation; no live IDA process required.
